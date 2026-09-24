@@ -27,7 +27,7 @@ RECEIPT_SUBJECT_REGEX = re.compile(
     re.IGNORECASE,
 )
 RECEIPT_BODY_REGEX = re.compile(
-    r"(total\s*[:=]\s*[₹$€£]\s*[\d,]+(?:\.\d{2})?|amount\s+charged|amount\s+paid|subtotal|billing\s+date|payment\s+date|gstin|invoice\s*#)",
+    r"(total\s*[:=]\s*(?:[₹$€£]|INR|Rs\.?|USD|EUR|GBP)\s*[\d,]+(?:\.\d{2})?|amount\s+charged|amount\s+paid|subtotal|billing\s+date|payment\s+date|gstin|invoice\s*#)",
     re.IGNORECASE,
 )
 RECEIPT_DOMAINS = {
@@ -89,7 +89,7 @@ class EmailRouter:
     """Classifies raw emails using deterministic heuristics with zero LLM API cost."""
 
     def __init__(self, vip_contacts: set[str] | None = None):
-        self.vip_contacts = vip_contacts or set()
+        self.vip_contacts = {c.lower().strip() for c in (vip_contacts or set())}
 
     def route(self, email: RawEmail) -> RouteResult:
         """Route an email to a primary category or escalate to NEEDS_LLM."""

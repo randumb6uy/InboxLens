@@ -26,8 +26,11 @@ def _extract_body_parts(payload: dict[str, Any]) -> tuple[str, Optional[str]]:
 
     if body_data:
         try:
-            # Gmail uses URL-safe base64 encoding without padding
-            decoded = base64.urlsafe_b64decode(body_data.encode("ASCII")).decode("utf-8", errors="replace")
+            # Handle URL-safe base64 encoding with potential missing padding
+            pad_needed = len(body_data) % 4
+            if pad_needed:
+                body_data += "=" * (4 - pad_needed)
+            decoded = base64.urlsafe_b64decode(body_data.encode("ASCII", errors="ignore")).decode("utf-8", errors="replace")
             if "text/plain" in mime_type:
                 plain_text += decoded
             elif "text/html" in mime_type:
@@ -36,7 +39,7 @@ def _extract_body_parts(payload: dict[str, Any]) -> tuple[str, Optional[str]]:
             logger.debug("Failed decoding body payload: %s", e)
 
     # Check multipart children
-    for part in payload.get("parts", []):
+    for part in payload.get("parts", []) or []:
         sub_plain, sub_html = _extract_body_parts(part)
         if sub_plain:
             plain_text += ("\n" + sub_plain) if plain_text else sub_plain
@@ -46,12 +49,13 @@ def _extract_body_parts(payload: dict[str, Any]) -> tuple[str, Optional[str]]:
     return plain_text.strip(), html_text
 
 
-def _parse_sender_details(from_header: str) -> tuple[str, str, str]:
-    """Parse 'From: Display Name <user@example.com>' into (full, email, domain)."""
-    display_name, email_address = email.utils.parseaddr(from_header)
+def _parse_sender_details(from_header: Optional[str]) -> tuple[str, str, str]:
+    """Parse 'From: Display Name <user@example.com>' into (full, email, domain) safely."""
+    raw_header = str(from_header or "").strip()
+    display_name, email_address = email.utils.parseaddr(raw_header)
     clean_email = email_address.lower().strip()
     domain = clean_email.split("@")[-1] if "@" in clean_email else ""
-    return from_header, clean_email, domain
+    return raw_header, clean_email, domain
 
 
 def _parse_email_date(date_header: str) -> datetime:
