@@ -17,8 +17,8 @@ IndexLens is an AI-first Gmail intelligence engine that ingests emails via the o
    cp .env.example .env
    ```
 
-2. To run with live Gmail, place your Google Cloud OAuth2 `credentials.json` in the root directory.
-   To run in demo/offline mode, set `MOCK_GMAIL=true` in `.env`.
+2. To run with live Gmail, follow the step-by-step setup in [GMAIL_SETUP.md](GMAIL_SETUP.md) and place your `credentials.json` in the root directory.
+   To run in demo/offline mode without Google credentials, set `MOCK_GMAIL=true` in `.env`.
 
 3. Run Phase 0 ingestion test:
    ```bash
