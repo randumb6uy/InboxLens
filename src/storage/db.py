@@ -12,6 +12,10 @@ from src.schemas.email_schemas import RawEmail
 DEFAULT_DB_PATH = BASE_DIR / "indexlens.db"
 
 
+import contextlib
+from collections.abc import Generator
+
+
 class Database:
     """Manages SQLite connection and provides schema queries."""
 
@@ -20,11 +24,19 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+    @contextlib.contextmanager
+    def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         """Create tables and indexes if they do not exist."""

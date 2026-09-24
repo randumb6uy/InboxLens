@@ -29,13 +29,16 @@ def run_ingestion_pipeline(
     emails = client.fetch_recent_emails(limit=limit, query=query)
 
     for email in emails:
-        route_res = router.route(email)
-        db.upsert_email(
-            email=email,
-            classification=route_res.category,
-            matched_rule=route_res.matched_rule,
-            confidence=route_res.confidence,
-        )
+        try:
+            route_res = router.route(email)
+            db.upsert_email(
+                email=email,
+                classification=route_res.category,
+                matched_rule=route_res.matched_rule,
+                confidence=route_res.confidence,
+            )
+        except Exception as err:
+            logger.error("Failed processing email %s: %s", getattr(email, "id", "unknown"), err)
 
     stats = db.get_classification_stats()
     return emails, stats

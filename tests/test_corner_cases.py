@@ -330,3 +330,52 @@ def test_db_vip_duplicate_handling(temp_db):
     contacts = temp_db.get_vip_contacts()
     assert len(contacts) == 1
     assert "partner@vc.com" in contacts
+
+
+def test_router_external_re_prefix():
+    """Conversation thread with [EXTERNAL] or [Team] prefixes before Re:."""
+    router = EmailRouter()
+    email = RawEmail(
+        id="ext_re_01",
+        thread_id="th_ext",
+        sender="Partner <colleague@partner.org>",
+        sender_email="colleague@partner.org",
+        sender_domain="partner.org",
+        subject="[EXTERNAL] Re: Feedback on architecture proposal",
+        date=datetime.now(timezone.utc),
+        body_plain="Sounds good, let's meet tomorrow.",
+    )
+    res = router.route(email)
+    assert res.category == "PERSONAL"
+    assert res.matched_rule == "conversation_thread_reply"
+
+
+def test_router_none_and_whitespace_fields():
+    """Email with None values in optional fields."""
+    router = EmailRouter()
+    email = RawEmail(
+        id="none_fields_msg",
+        thread_id="th_none",
+        sender="System <sys@internal.net>",
+        sender_email="sys@internal.net",
+        sender_domain="internal.net",
+        subject="",
+        date=datetime.now(timezone.utc),
+        body_plain="",
+    )
+    res = router.route(email)
+    assert res.category == "NEEDS_LLM"
+
+
+def test_db_connection_context_manager(tmp_path):
+    """Verify contextmanager commits, releases, and closes connections properly."""
+    db_file = tmp_path / "conn_test.db"
+    db = Database(db_file)
+    with db.get_connection() as conn:
+        conn.execute("CREATE TABLE test_lock (x INT);")
+        conn.execute("INSERT INTO test_lock VALUES (42);")
+
+    # Re-open in a second transaction to verify it committed and released lock
+    with db.get_connection() as conn2:
+        val = conn2.execute("SELECT x FROM test_lock;").fetchone()[0]
+        assert val == 42

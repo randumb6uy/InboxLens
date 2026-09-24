@@ -85,6 +85,10 @@ DEADLINE_REGEX = re.compile(
 )
 
 
+# Thread reply & forward patterns (handles [EXTERNAL] Re: etc.)
+RE_FWD_REGEX = re.compile(r"^(?:\[[^\]]+\]\s*)*(?:re|fwd|fw)\s*:\s*", re.IGNORECASE)
+
+
 class EmailRouter:
     """Classifies raw emails using deterministic heuristics with zero LLM API cost."""
 
@@ -93,10 +97,10 @@ class EmailRouter:
 
     def route(self, email: RawEmail) -> RouteResult:
         """Route an email to a primary category or escalate to NEEDS_LLM."""
-        subject = email.subject.lower()
-        body = email.body_plain.lower()
-        sender_email = email.sender_email.lower()
-        sender_domain = email.sender_domain.lower()
+        subject = (email.subject or "").lower().strip()
+        body = (email.body_plain or "").lower()
+        sender_email = (email.sender_email or "").lower().strip()
+        sender_domain = (email.sender_domain or "").lower().strip()
 
         # 1. VIP contacts take precedence for personal triage
         if sender_email in self.vip_contacts:
@@ -130,7 +134,7 @@ class EmailRouter:
             return RouteResult("DEADLINE", "deadline_keywords", 0.85)
 
         # 7. Personal (Direct one-on-one correspondence)
-        if subject.startswith("re:") or subject.startswith("fwd:"):
+        if RE_FWD_REGEX.search(subject):
             # Likely an ongoing human conversation if not an automated newsletter
             if not has_newsletter_body:
                 return RouteResult("PERSONAL", "conversation_thread_reply", 0.80)
