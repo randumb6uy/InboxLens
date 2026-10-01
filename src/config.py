@@ -24,3 +24,5 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'indexlens.db'}
 # OpenRouter (Phase 2)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct:free")
+ANOMALY_MODEL = os.getenv("ANOMALY_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct:free")

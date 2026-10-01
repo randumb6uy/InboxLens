@@ -1,0 +1,26 @@
+{
+  ".agents/rules/graphify.md": {
+    "mtime": 1790234409.1696477,
+    "seen": 1790236618.3070471,
+    "ast_hash": "a0e4d192b9e2e17256124dbfc8e24e6a",
+    "semantic_hash": "a0e4d192b9e2e17256124dbfc8e24e6a"
+  },
+  ".agents/workflows/graphify.md": {
+    "mtime": 1790234409.1712883,
+    "seen": 1790236618.3070538,
+    "ast_hash": "a831cf3669f1e6ab85d8a80ebe655f99",
+    "semantic_hash": "a831cf3669f1e6ab85d8a80ebe655f99"
+  },
+  "architecture.md": {
+    "mtime": 1790233568.6593575,
+    "seen": 1790236618.3070571,
+    "ast_hash": "3dbfbce1547315cbe5f1055913617e59",
+    "semantic_hash": "3dbfbce1547315cbe5f1055913617e59"
+  },
+  "project.md": {
+    "mtime": 1790233564.9733453,
+    "seen": 1790236618.307059,
+    "ast_hash": "90628bb8a7c129a4c9dbbacd62d08b74",
+    "semantic_hash": "90628bb8a7c129a4c9dbbacd62d08b74"
+  }
+}

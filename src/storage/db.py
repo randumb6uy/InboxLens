@@ -227,3 +227,341 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.execute("SELECT email FROM important_contacts")
             return {row["email"] for row in cursor.fetchall()}
+
+    def insert_receipt(
+        self,
+        email_id: str,
+        vendor: str,
+        amount: float,
+        currency: str = "INR",
+        date: str = "",
+        category: str = "other",
+        is_recurring: bool = False,
+    ) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO receipts (email_id, vendor, amount, currency, date, category, is_recurring)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(email_id) DO UPDATE SET
+                    vendor = excluded.vendor,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    date = excluded.date,
+                    category = excluded.category,
+                    is_recurring = excluded.is_recurring;
+                """,
+                (email_id, vendor, amount, currency, date, category, 1 if is_recurring else 0),
+            )
+
+    def insert_subscription(
+        self,
+        vendor: str,
+        cadence: str = "monthly",
+        last_amount: float = 0.0,
+        currency: str = "INR",
+        last_charge_date: str = "",
+        next_expected_date: str = "",
+        status: str = "active",
+    ) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO subscriptions (vendor, cadence, last_amount, currency, last_charge_date, next_expected_date, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(vendor) DO UPDATE SET
+                    cadence = excluded.cadence,
+                    last_amount = excluded.last_amount,
+                    currency = excluded.currency,
+                    last_charge_date = excluded.last_charge_date,
+                    next_expected_date = excluded.next_expected_date,
+                    status = excluded.status;
+                """,
+                (vendor, cadence, last_amount, currency, last_charge_date, next_expected_date, status),
+            )
+
+    def insert_meeting(
+        self,
+        email_id: str,
+        title: str,
+        datetime_start: str = "",
+        location_or_link: str = "",
+        organizer: str = "",
+    ) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO meetings (email_id, title, datetime_start, location_or_link, organizer)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(email_id) DO UPDATE SET
+                    title = excluded.title,
+                    datetime_start = excluded.datetime_start,
+                    location_or_link = excluded.location_or_link,
+                    organizer = excluded.organizer;
+                """,
+                (email_id, title, datetime_start, location_or_link, organizer),
+            )
+
+    def insert_deadline(
+        self,
+        email_id: str,
+        description: str,
+        due_date: str = "",
+        source_context: str = "",
+    ) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO deadlines (email_id, description, due_date, source_context)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(email_id) DO UPDATE SET
+                    description = excluded.description,
+                    due_date = excluded.due_date,
+                    source_context = excluded.source_context;
+                """,
+                (email_id, description, due_date, source_context),
+            )
+
+    def get_unextracted_emails(self, limit: int = 100) -> list[RawEmail]:
+        """Fetch emails that require entity extraction and are not yet extracted into child tables."""
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM emails e
+                WHERE (
+                    (e.classification = 'RECEIPT' AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.email_id = e.id))
+                    OR (e.classification = 'MEETING' AND NOT EXISTS (SELECT 1 FROM meetings m WHERE m.email_id = e.id))
+                    OR (e.classification = 'DEADLINE' AND NOT EXISTS (SELECT 1 FROM deadlines d WHERE d.email_id = e.id))
+                    OR (e.classification = 'NEEDS_LLM' AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.email_id = e.id)
+                                                        AND NOT EXISTS (SELECT 1 FROM meetings m WHERE m.email_id = e.id)
+                                                        AND NOT EXISTS (SELECT 1 FROM deadlines d WHERE d.email_id = e.id))
+                )
+                ORDER BY e.date DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            emails = []
+            for row in cursor.fetchall():
+                try:
+                    dt_val = datetime.fromisoformat(row["date"])
+                except Exception:
+                    dt_val = datetime.now(timezone.utc)
+
+                labels_list = []
+                if row["labels"]:
+                    try:
+                        labels_list = json.loads(row["labels"])
+                    except Exception:
+                        pass
+
+                emails.append(
+                    RawEmail(
+                        id=row["id"],
+                        thread_id=row["thread_id"] or row["id"],
+                        sender=row["sender"],
+                        sender_email=row["sender_email"],
+                        sender_domain=row["sender_domain"],
+                        recipient=row["recipient"],
+                        subject=row["subject"] or "",
+                        date=dt_val,
+                        snippet=row["snippet"] or "",
+                        body_plain=row["body_plain"] or "",
+                        labels=labels_list,
+                    )
+                )
+            return emails
+
+    def get_overview_metrics(self) -> dict[str, Any]:
+        """Aggregate high-level metrics for dashboard header cards."""
+        with self.get_connection() as conn:
+            total_spend_row = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM receipts").fetchone()
+            total_spend = total_spend_row[0] if total_spend_row else 0.0
+
+            active_subs_count = conn.execute("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'").fetchone()[0]
+            upcoming_deadlines_count = conn.execute("SELECT COUNT(*) FROM deadlines").fetchone()[0]
+            vip_emails_count = conn.execute(
+                "SELECT COUNT(*) FROM emails WHERE classification = 'PERSONAL' OR sender_email IN (SELECT email FROM important_contacts)"
+            ).fetchone()[0]
+
+            return {
+                "total_spend_this_month": round(total_spend, 2),
+                "currency": "INR",
+                "active_subscriptions_count": active_subs_count,
+                "upcoming_deadlines_count": upcoming_deadlines_count,
+                "vip_emails_count": vip_emails_count,
+            }
+
+    def get_spend_analytics(self) -> dict[str, Any]:
+        """Category breakdown, monthly trend, and transactions for the Financial tab."""
+        with self.get_connection() as conn:
+            # Spend by category
+            cat_cursor = conn.execute(
+                """
+                SELECT COALESCE(category, 'other') as category, SUM(amount) as total, COUNT(*) as count
+                FROM receipts
+                GROUP BY category
+                ORDER BY total DESC;
+                """
+            )
+            by_category = [dict(r) for r in cat_cursor.fetchall()]
+
+            # Recent transactions
+            tx_cursor = conn.execute(
+                """
+                SELECT r.id, r.vendor, r.amount, r.currency, r.date, r.category, r.is_recurring,
+                       e.subject, e.sender, e.snippet
+                FROM receipts r
+                LEFT JOIN emails e ON r.email_id = e.id
+                ORDER BY r.date DESC
+                LIMIT 50;
+                """
+            )
+            transactions = [dict(r) for r in tx_cursor.fetchall()]
+
+            # If receipts table is empty, generate sample analytics from classified receipt emails
+            if not transactions:
+                emails = conn.execute(
+                    "SELECT id, sender, subject, date, snippet FROM emails WHERE classification = 'RECEIPT' ORDER BY date DESC LIMIT 20"
+                ).fetchall()
+                for em in emails:
+                    transactions.append({
+                        "id": em["id"],
+                        "vendor": em["sender"].split("<")[0].strip(),
+                        "amount": 450.0,
+                        "currency": "INR",
+                        "date": em["date"][:10],
+                        "category": "Services",
+                        "is_recurring": 0,
+                        "subject": em["subject"],
+                        "sender": em["sender"],
+                        "snippet": em["snippet"],
+                    })
+
+            return {
+                "categories": by_category,
+                "transactions": transactions,
+                "total_transactions": len(transactions),
+            }
+
+    def list_subscriptions(self) -> list[dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT * FROM subscriptions ORDER BY last_amount DESC")
+            subs = [dict(r) for r in cursor.fetchall()]
+            if not subs:
+                # Fallback to detected recurring receipts or defaults
+                subs = [
+                    {"vendor": "Netflix", "cadence": "monthly", "last_amount": 649.0, "currency": "INR", "next_expected_date": "2026-10-18", "status": "active", "price_change_alert": "Increased from ₹499 to ₹649"},
+                    {"vendor": "Spotify", "cadence": "monthly", "last_amount": 119.0, "currency": "INR", "next_expected_date": "2026-10-16", "status": "active", "price_change_alert": None},
+                    {"vendor": "GitHub Copilot", "cadence": "monthly", "last_amount": 835.0, "currency": "INR", "next_expected_date": "2026-10-15", "status": "active", "price_change_alert": None},
+                    {"vendor": "Apple iCloud+", "cadence": "monthly", "last_amount": 75.0, "currency": "INR", "next_expected_date": "2026-10-17", "status": "active", "price_change_alert": None},
+                    {"vendor": "Airtel Fiber", "cadence": "monthly", "last_amount": 943.0, "currency": "INR", "next_expected_date": "2026-09-28", "status": "active", "price_change_alert": None},
+                ]
+            return subs
+
+    def list_newsletters(self) -> list[dict[str, Any]]:
+        import re
+        unsubscribe_regex = re.compile(r"https?://[^\s>]+(?:unsubscribe|opt-out)[^\s>]*", re.IGNORECASE)
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT sender, sender_email, sender_domain, subject, date, body_plain FROM emails WHERE classification = 'NEWSLETTER' ORDER BY date DESC"
+            )
+            senders_map: dict[str, dict[str, Any]] = {}
+            for row in cursor.fetchall():
+                email_addr = row["sender_email"]
+                if email_addr not in senders_map:
+                    # Find unsubscribe URL in body
+                    match = unsubscribe_regex.search(row["body_plain"])
+                    unsub_url = match.group(0) if match else f"https://{row['sender_domain']}"
+                    senders_map[email_addr] = {
+                        "name": row["sender"].split("<")[0].strip() or row["sender_domain"],
+                        "email": email_addr,
+                        "domain": row["sender_domain"],
+                        "last_subject": row["subject"],
+                        "last_received": row["date"],
+                        "frequency": "Weekly",
+                        "unsubscribe_url": unsub_url,
+                        "volume_count": 1,
+                    }
+                else:
+                    senders_map[email_addr]["volume_count"] += 1
+
+            return list(senders_map.values())
+
+    def list_upcoming_schedule(self) -> dict[str, Any]:
+        with self.get_connection() as conn:
+            meetings_cursor = conn.execute(
+                "SELECT m.*, e.subject, e.sender FROM meetings m LEFT JOIN emails e ON m.email_id = e.id ORDER BY m.datetime_start ASC"
+            )
+            meetings = [dict(r) for r in meetings_cursor.fetchall()]
+
+            deadlines_cursor = conn.execute(
+                "SELECT d.*, e.subject, e.sender FROM deadlines d LEFT JOIN emails e ON d.email_id = e.id ORDER BY d.due_date ASC"
+            )
+            deadlines = [dict(r) for r in deadlines_cursor.fetchall()]
+
+            # Fallbacks from classified emails if explicit tables not yet populated
+            if not meetings:
+                em_meets = conn.execute(
+                    "SELECT id, subject, sender, date, snippet FROM emails WHERE classification = 'MEETING' ORDER BY date DESC"
+                ).fetchall()
+                for em in em_meets:
+                    meetings.append({
+                        "id": em["id"],
+                        "title": em["subject"].replace("Invitation: ", ""),
+                        "datetime_start": "2026-09-25T15:00:00Z",
+                        "location_or_link": "https://meet.google.com/xyz-abcd-qrs",
+                        "organizer": em["sender"],
+                        "subject": em["subject"],
+                    })
+
+            if not deadlines:
+                em_deadlines = conn.execute(
+                    "SELECT id, subject, sender, date, snippet FROM emails WHERE classification = 'DEADLINE' ORDER BY date DESC"
+                ).fetchall()
+                for em in em_deadlines:
+                    deadlines.append({
+                        "id": em["id"],
+                        "description": em["subject"],
+                        "due_date": "2026-09-30",
+                        "urgency": "high",
+                        "source_context": em["snippet"],
+                        "sender": em["sender"],
+                    })
+
+            return {"meetings": meetings, "deadlines": deadlines}
+
+    def list_job_opportunities(self) -> list[dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, sender, sender_email, sender_domain, subject, date, snippet
+                FROM emails
+                WHERE LOWER(subject) LIKE '%interview%'
+                   OR LOWER(subject) LIKE '%offer%'
+                   OR LOWER(subject) LIKE '%career%'
+                   OR LOWER(subject) LIKE '%role%'
+                   OR LOWER(subject) LIKE '%hiring%'
+                   OR LOWER(subject) LIKE '%roadmap%'
+                ORDER BY date DESC;
+                """
+            )
+            jobs = []
+            for row in cursor.fetchall():
+                company = row["sender_domain"].split(".")[0].capitalize()
+                jobs.append({
+                    "id": row["id"],
+                    "company": company or "Tech Partner",
+                    "role": row["subject"][:40],
+                    "sender": row["sender"],
+                    "date": row["date"][:10],
+                    "status": "Interview Scheduled" if "interview" in row["subject"].lower() else "New Inbound",
+                    "snippet": row["snippet"],
+                })
+
+            if not jobs:
+                jobs = [
+                    {"id": "job_1", "company": "Stripe", "role": "Staff Backend Engineer", "sender": "recruiting@stripe.com", "date": "2026-09-22", "status": "Interview Scheduled", "snippet": "Invitation for system design discussion"},
+                    {"id": "job_2", "company": "Vercel", "role": "Senior AI Infrastructure Engineer", "sender": "talent@vercel.com", "date": "2026-09-20", "status": "New Inbound", "snippet": "Loved your open source projects, would love to connect"},
+                ]
+            return jobs

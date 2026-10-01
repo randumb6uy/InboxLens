@@ -135,6 +135,38 @@ def handle_stats(args: argparse.Namespace) -> None:
     )
 
 
+def handle_extract(args: argparse.Namespace) -> None:
+    """Run structured extraction (receipts, subscriptions, meetings, deadlines) on stored emails."""
+    from src.extraction.pipeline import run_extraction_pipeline
+
+    limit = args.limit
+    console.print(
+        Panel.fit(
+            f"[bold cyan]IndexLens — Structured Entity Extraction (Phase 2)[/bold cyan]\n"
+            f"Limit: [green]{limit}[/green] | Target: [yellow]Unextracted Receipts, Subscriptions, Meetings, Deadlines[/yellow]",
+            border_style="cyan",
+        )
+    )
+
+    with console.status("[bold green]Extracting structured entities via LLM / Heuristics..."):
+        results = run_extraction_pipeline(limit=limit)
+
+    table = Table(title="Extraction Results", show_lines=True)
+    table.add_column("Entity Type", style="bold cyan")
+    table.add_column("Count Extracted", justify="right", style="green")
+
+    table.add_row("Processed Unextracted Emails", str(results["processed_count"]))
+    table.add_row("Financial Receipts", str(results["receipts_extracted"]))
+    table.add_row("Active Subscriptions Detected", str(results["subscriptions_detected"]))
+    table.add_row("Meetings / Calendar Invites", str(results["meetings_extracted"]))
+    table.add_row("Urgent Deadlines / Action Items", str(results["deadlines_extracted"]))
+
+    console.print(table)
+    console.print(
+        f"[bold green][OK] Extraction completed successfully.[/bold green]"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IndexLens — AI-Powered Gmail Data & Stats Agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -159,8 +191,89 @@ def main() -> None:
     stats_parser = subparsers.add_parser("stats", help="Display inbox classification statistics from SQLite")
     stats_parser.set_defaults(func=handle_stats)
 
+    # extract
+    extract_parser = subparsers.add_parser("extract", help="Extract structured entities (receipts, subscriptions, meetings, deadlines)")
+    extract_parser.add_argument("--limit", type=int, default=100, help="Number of emails to extract (default: 100)")
+    extract_parser.set_defaults(func=handle_extract)
+
+    # test-llm
+    test_llm_parser = subparsers.add_parser("test-llm", help="Test live connection to OpenRouter LLM")
+    test_llm_parser.set_defaults(func=handle_test_llm)
+
+    # serve
+    serve_parser = subparsers.add_parser("serve", help="Launch FastAPI REST backend server for Lovable UI")
+    serve_parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address (default: 127.0.0.1)")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Port number (default: 8000)")
+    serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code change")
+    serve_parser.set_defaults(func=handle_serve)
+
     args = parser.parse_args()
     args.func(args)
+
+
+def handle_test_llm(args: argparse.Namespace) -> None:
+    """Test connectivity to OpenRouter using configured model."""
+    import datetime as dt
+    from src.config import OPENROUTER_API_KEY, EXTRACTION_MODEL, OPENROUTER_BASE_URL
+    from src.extraction.extractor import LLMExtractor
+    from src.schemas.email_schemas import RawEmail
+
+    console.print(
+        Panel.fit(
+            f"[bold cyan]IndexLens — OpenRouter LLM Connectivity Test[/bold cyan]\n"
+            f"Base URL: [green]{OPENROUTER_BASE_URL}[/green]\n"
+            f"Model: [green]{EXTRACTION_MODEL}[/green]",
+            border_style="cyan",
+        )
+    )
+
+    if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "your_openrouter_api_key_here":
+        console.print(
+            "[bold red][X] No API Key detected in .env![/bold red]\n"
+            "Please paste your OpenRouter key into .env: [yellow]OPENROUTER_API_KEY=sk-or-v1-...[/yellow] and save the file (Ctrl+S)."
+        )
+        return
+
+    console.print(f"[dim]Key detected: {OPENROUTER_API_KEY[:8]}... (length: {len(OPENROUTER_API_KEY)})[/dim]")
+    extractor = LLMExtractor()
+    if not extractor.is_live:
+        console.print("[bold red]Extractor failed to initialize live client with provided key.[/bold red]")
+        return
+
+    sample = RawEmail(
+        id="test_msg_001",
+        thread_id="test_th_001",
+        sender="Swiggy <orders@swiggy.in>",
+        sender_email="orders@swiggy.in",
+        sender_domain="swiggy.in",
+        subject="Your order from Burger King has been delivered",
+        date=dt.datetime.now(dt.timezone.utc),
+        snippet="Total paid: ₹485.50 via UPI.",
+        body_plain="Order Details: Whopper Meal x 1. Item total: ₹450. Taxes: ₹35.50. Total amount: ₹485.50. Payment mode: Google Pay UPI.",
+        labels=["INBOX", "RECEIPTS"],
+    )
+
+    with console.status(f"[bold green]Sending test extraction request to {EXTRACTION_MODEL}..."):
+        try:
+            extracted = extractor._extract_llm(sample, hint="RECEIPT")
+            console.print(f"[bold green][OK] Connection successful! Model extracted structured output:[/bold green]")
+            console.print(extracted.model_dump_json(indent=2))
+        except Exception as err:
+            console.print(f"[bold red][X] OpenRouter call failed:[/bold red] {err}")
+
+
+def handle_serve(args: argparse.Namespace) -> None:
+    """Launch the FastAPI server."""
+    import uvicorn
+    console.print(
+        Panel.fit(
+            f"[bold cyan]IndexLens — API Server Running[/bold cyan]\n"
+            f"Host: [green]{args.host}[/green] | Port: [green]{args.port}[/green]\n"
+            f"API Docs: [bold blue]http://{args.host}:{args.port}/docs[/bold blue]",
+            border_style="cyan",
+        )
+    )
+    uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=args.reload)
 
 
 if __name__ == "__main__":

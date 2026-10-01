@@ -21,6 +21,8 @@ client_secret*.json
 
 # Testing & Linting
 .pytest_cache/
+.cache/
+graphify-out/cache/
 .coverage
 htmlcov/
 .mypy_cache/
