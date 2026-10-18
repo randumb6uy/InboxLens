@@ -138,9 +138,9 @@ class Database:
                     classification, matched_rule, confidence, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
-                    classification = excluded.classification,
-                    matched_rule = excluded.matched_rule,
-                    confidence = excluded.confidence;
+                    classification = CASE WHEN emails.matched_rule = 'llm_extraction' AND excluded.classification = 'NEEDS_LLM' THEN emails.classification ELSE excluded.classification END,
+                    matched_rule = CASE WHEN emails.matched_rule = 'llm_extraction' AND excluded.classification = 'NEEDS_LLM' THEN emails.matched_rule ELSE excluded.matched_rule END,
+                    confidence = CASE WHEN emails.matched_rule = 'llm_extraction' AND excluded.classification = 'NEEDS_LLM' THEN emails.confidence ELSE excluded.confidence END;
                 """,
                 (
                     email.id,
