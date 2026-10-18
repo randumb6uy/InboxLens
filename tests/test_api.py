@@ -85,11 +85,17 @@ def test_api_jobs():
 
 
 def test_api_sync_inbox():
-    res = client.post("/api/inbox/sync", json={"limit": 20, "mock": True})
-    assert res.status_code == 200
-    data = res.json()
-    assert data["status"] == "success"
-    assert data["ingested_count"] == 20
+    from unittest.mock import patch
+    with patch("src.api.routes.run_ingestion_pipeline") as mock_pipeline:
+        mock_pipeline.return_value = (
+            [{"id": "test_1"}, {"id": "test_2"}],
+            {"total": 2, "deterministic_rate": 100.0, "breakdown": {"RECEIPT": 2}}
+        )
+        res = client.post("/api/inbox/sync", json={"limit": 20, "mock": True})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["ingested_count"] == 2
 
 
 def test_api_ask():
