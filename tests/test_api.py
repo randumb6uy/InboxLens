@@ -90,3 +90,12 @@ def test_api_sync_inbox():
     data = res.json()
     assert data["status"] == "success"
     assert data["ingested_count"] == 20
+
+
+def test_api_ask():
+    res = client.post("/api/ask", json={"query": "How much did I spend this month?"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "answer" in data
+    assert "query" in data
+    assert len(data["answer"]) > 0

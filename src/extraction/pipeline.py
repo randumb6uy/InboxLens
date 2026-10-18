@@ -28,6 +28,7 @@ def run_extraction_pipeline(
     subs_count = 0
     meetings_count = 0
     deadlines_count = 0
+    resolved_llm_count = 0
 
     for email in unextracted:
         try:
@@ -36,6 +37,8 @@ def run_extraction_pipeline(
             classification = stored["classification"] if stored else None
 
             extracted = extractor.extract(email, classification_hint=classification)
+            is_needs_llm = classification == "NEEDS_LLM"
+            handled_in_tables = False
 
             # 1. Process Receipt
             if extracted.receipt_data and extracted.receipt_data.amount is not None:
@@ -65,6 +68,11 @@ def run_extraction_pipeline(
                     )
                     subs_count += 1
 
+                if is_needs_llm:
+                    db.update_email_classification(email.id, "RECEIPT", matched_rule="llm_extraction", summary=extracted.summary)
+                    resolved_llm_count += 1
+                handled_in_tables = True
+
             # 2. Process Meeting
             if extracted.meeting_data and extracted.meeting_data.title:
                 m = extracted.meeting_data
@@ -78,6 +86,11 @@ def run_extraction_pipeline(
                 )
                 meetings_count += 1
 
+                if is_needs_llm and not handled_in_tables:
+                    db.update_email_classification(email.id, "MEETING", matched_rule="llm_extraction", summary=extracted.summary)
+                    resolved_llm_count += 1
+                handled_in_tables = True
+
             # 3. Process Deadline
             if extracted.deadline_data and extracted.deadline_data.description:
                 d = extracted.deadline_data
@@ -90,6 +103,43 @@ def run_extraction_pipeline(
                 )
                 deadlines_count += 1
 
+                if is_needs_llm and not handled_in_tables:
+                    db.update_email_classification(email.id, "DEADLINE", matched_rule="llm_extraction", summary=extracted.summary)
+                    resolved_llm_count += 1
+                handled_in_tables = True
+
+            # 4. Resolve remaining NEEDS_LLM emails (e.g. personal, job_related, promotional, newsletter)
+            if is_needs_llm and not handled_in_tables:
+                if extracted.email_type == "job_related":
+                    target_cat = "JOB_RELATED"
+                elif extracted.email_type == "travel":
+                    target_cat = "TRAVEL"
+                elif extracted.email_type in ("deadline", "bill"):
+                    target_cat = "DEADLINE"
+                elif extracted.email_type == "meeting_invite":
+                    target_cat = "MEETING"
+                elif extracted.email_type == "newsletter":
+                    target_cat = "NEWSLETTER"
+                elif extracted.email_type == "promotional":
+                    target_cat = "PROMOTIONAL"
+                elif extracted.email_type == "receipt":
+                    target_cat = "RECEIPT"
+                elif extracted.email_type == "personal":
+                    target_cat = "PERSONAL"
+                else:
+                    target_cat = "PROMOTIONAL"
+
+                if extracted.is_vip_sender:
+                    db.add_vip_contact(email.sender_email, email.sender.split("<")[0].strip(), "Resolved by LLM")
+
+                db.update_email_classification(
+                    email.id,
+                    target_cat,
+                    matched_rule="llm_extraction",
+                    summary=extracted.summary,
+                )
+                resolved_llm_count += 1
+
         except Exception as err:
             logger.error("Error extracting email %s: %s", email.id, err)
 
@@ -99,6 +149,7 @@ def run_extraction_pipeline(
         "subscriptions_detected": subs_count,
         "meetings_extracted": meetings_count,
         "deadlines_extracted": deadlines_count,
+        "resolved_llm_count": resolved_llm_count,
     }
     logger.info("Extraction complete: %s", results)
     return results

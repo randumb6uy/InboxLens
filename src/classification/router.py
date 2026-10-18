@@ -70,7 +70,7 @@ PROMO_DOMAINS = {
     "goibibo.com",
 }
 PROMO_SUBJECT_REGEX = re.compile(
-    r"\b(\d+%\s*off|flat\s+₹?\d+|sale\b|mega\s+deal|exclusive\s+offer|hurry|coupon|discount|special\s+price)\b",
+    r"\b(\d+%\s*(?:off|discount|savings)|flat\s+₹?\d+|sale\b|mega\s+deal|exclusive\s+offer|hurry|coupon|discount|special\s+price|save\s+\d+%?)\b",
     re.IGNORECASE,
 )
 

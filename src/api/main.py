@@ -34,7 +34,9 @@ app.add_middleware(
 # Include API routes
 app.include_router(router)
 
-# If Lovable built frontend exists in frontend/dist, serve it statically
+# If built frontend exists in frontend/.output/public or frontend/dist, serve it statically
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
-if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+FRONTEND_OUTPUT = BASE_DIR / "frontend" / ".output" / "public"
+static_dir = FRONTEND_OUTPUT if FRONTEND_OUTPUT.exists() else (FRONTEND_DIST if FRONTEND_DIST.exists() else None)
+if static_dir:
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="frontend")

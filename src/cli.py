@@ -160,6 +160,7 @@ def handle_extract(args: argparse.Namespace) -> None:
     table.add_row("Active Subscriptions Detected", str(results["subscriptions_detected"]))
     table.add_row("Meetings / Calendar Invites", str(results["meetings_extracted"]))
     table.add_row("Urgent Deadlines / Action Items", str(results["deadlines_extracted"]))
+    table.add_row("Resolved Ambiguous (NEEDS_LLM)", str(results.get("resolved_llm_count", 0)))
 
     console.print(table)
     console.print(

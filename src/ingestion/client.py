@@ -78,21 +78,18 @@ class GmailClient:
         self._service: Optional[Resource] = None
 
         if not self.mock:
-            # If credentials don't exist, log and fall back to mock
             if not GMAIL_CREDENTIALS_PATH.exists() and not GMAIL_TOKEN_PATH.exists():
-                logger.info(
-                    "No Gmail credentials found at %s. Falling back to mock dataset.",
-                    GMAIL_CREDENTIALS_PATH,
+                raise FileNotFoundError(
+                    f"No Gmail credentials found at '{GMAIL_CREDENTIALS_PATH}' or '{GMAIL_TOKEN_PATH}'. "
+                    "Live Gmail authentication requires valid credentials."
                 )
-                self.mock = True
-            else:
-                try:
-                    creds = get_gmail_credentials()
-                    self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-                    logger.info("Connected to live Gmail API service.")
-                except Exception as e:
-                    logger.warning("Failed connecting to Gmail API (%s). Falling back to mock.", e)
-                    self.mock = True
+            try:
+                creds = get_gmail_credentials()
+                self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+                logger.info("Connected to live Gmail API service.")
+            except Exception as e:
+                logger.error("Failed connecting to Gmail API: %s", e)
+                raise RuntimeError(f"Failed connecting to live Gmail API: {e}") from e
 
     def list_message_ids(
         self,

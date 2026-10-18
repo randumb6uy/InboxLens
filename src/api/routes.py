@@ -19,7 +19,12 @@ class AddVipRequest(BaseModel):
 
 class SyncRequest(BaseModel):
     limit: int = 100
-    mock: Optional[bool] = None
+    mock: Optional[bool] = False
+    extract: Optional[bool] = False
+
+
+class AskRequest(BaseModel):
+    query: str
 
 
 @router.get("/health")
@@ -60,11 +65,22 @@ def get_newsletters() -> list[dict[str, Any]]:
 def get_important_contacts() -> dict[str, Any]:
     """List VIP contacts and correspondence threads."""
     vip_set = db.get_vip_contacts()
-    emails = db.list_emails(classification="PERSONAL", limit=50)
+    with db.get_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT id, sender, sender_email, sender_domain, subject, date, snippet
+            FROM emails
+            WHERE classification = 'PERSONAL' OR sender_email IN (SELECT email FROM important_contacts)
+            ORDER BY date DESC
+            LIMIT 50;
+            """
+        )
+        emails = [dict(r) for r in cursor.fetchall()]
     return {
         "vip_contacts": list(vip_set),
         "recent_threads": emails,
     }
+
 
 
 @router.post("/contacts/important")
@@ -102,13 +118,31 @@ def extract_entities(req: ExtractRequest = ExtractRequest()) -> dict[str, Any]:
 
 @router.post("/inbox/sync")
 def sync_inbox(req: SyncRequest = SyncRequest()) -> dict[str, Any]:
-    """Trigger email ingestion and return updated classification stats."""
+    """Trigger email ingestion, resolve NEEDS_LLM emails via LLM, and return updated stats."""
     emails, stats = run_ingestion_pipeline(limit=req.limit, mock=req.mock)
+    extraction_results = {}
+    if req.extract:
+        try:
+            from src.extraction.pipeline import run_extraction_pipeline
+            extraction_results = run_extraction_pipeline(limit=req.limit)
+            stats = db.get_classification_stats()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Automatic extraction after sync failed: %s", e)
+
     return {
         "status": "success",
         "ingested_count": len(emails),
         "stats": stats,
+        "extraction": extraction_results,
     }
+
+
+@router.post("/ask")
+def ask_question(req: AskRequest) -> dict[str, Any]:
+    """Answer natural-language questions about inbox and financial stats using LLM."""
+    from src.api.qa import answer_inbox_question
+    return answer_inbox_question(req.query, db=db)
 
 
 @router.get("/emails/{email_id}")

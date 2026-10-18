@@ -43,6 +43,7 @@ export interface SpendAnalytics {
   categories: Array<{ category: string; total: number; count: number }>;
   transactions: Transaction[];
   total_transactions: number;
+  spend_trend?: Array<{ month: string; spend: number }>;
 }
 
 export interface Subscription {
@@ -120,6 +121,13 @@ async function request<T>(endpoint: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface AskResponse {
+  query: string;
+  answer: string;
+  sources: string[];
+  model?: string;
+}
+
 export const api = {
   getOverview: () => request<OverviewResponse>("/stats/overview"),
   getSpend: () => request<SpendAnalytics>("/stats/spend"),
@@ -133,15 +141,20 @@ export const api = {
     }),
   getSchedule: () => request<ScheduleResponse>("/schedule/upcoming"),
   getJobs: () => request<JobOpportunity[]>("/jobs"),
-  syncInbox: (limit = 100, mock = true) =>
-    request<{ status: string; ingested_count: number; stats: ClassificationStats }>("/inbox/sync", {
+  syncInbox: (limit = 100, mock = false, extract = true) =>
+    request<{ status: string; ingested_count: number; stats: ClassificationStats; extraction?: Record<string, number> }>("/inbox/sync", {
       method: "POST",
-      body: JSON.stringify({ limit, mock }),
+      body: JSON.stringify({ limit, mock, extract }),
     }),
   extractEntities: (limit = 100) =>
     request<{ status: string; results: Record<string, number> }>("/extract", {
       method: "POST",
       body: JSON.stringify({ limit }),
+    }),
+  askQuestion: (query: string) =>
+    request<AskResponse>("/ask", {
+      method: "POST",
+      body: JSON.stringify({ query }),
     }),
   getEmailDetails: (emailId: string) => request<Record<string, unknown>>(`/emails/${emailId}`),
 };

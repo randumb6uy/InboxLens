@@ -19,8 +19,8 @@ from collections.abc import Generator
 class Database:
     """Manages SQLite connection and provides schema queries."""
 
-    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: Optional[Path | str] = None):
+        self.db_path = Path(db_path) if db_path else DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -209,6 +209,35 @@ class Database:
                 "breakdown": breakdown,
             }
 
+    def update_email_classification(
+        self,
+        email_id: str,
+        classification: str,
+        matched_rule: str = "llm_extraction",
+        confidence: float = 0.95,
+        summary: Optional[str] = None,
+    ) -> None:
+        """Update an email's classification and snippet after LLM resolution."""
+        with self.get_connection() as conn:
+            if summary:
+                conn.execute(
+                    """
+                    UPDATE emails
+                    SET classification = ?, matched_rule = ?, confidence = ?, snippet = ?
+                    WHERE id = ?
+                    """,
+                    (classification.upper(), matched_rule, confidence, summary, email_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE emails
+                    SET classification = ?, matched_rule = ?, confidence = ?
+                    WHERE id = ?
+                    """,
+                    (classification.upper(), matched_rule, confidence, email_id),
+                )
+
     def add_vip_contact(self, email: str, display_name: str = "", notes: str = "") -> None:
         domain = email.split("@")[-1].lower() if "@" in email else ""
         with self.get_connection() as conn:
@@ -332,9 +361,7 @@ class Database:
                     (e.classification = 'RECEIPT' AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.email_id = e.id))
                     OR (e.classification = 'MEETING' AND NOT EXISTS (SELECT 1 FROM meetings m WHERE m.email_id = e.id))
                     OR (e.classification = 'DEADLINE' AND NOT EXISTS (SELECT 1 FROM deadlines d WHERE d.email_id = e.id))
-                    OR (e.classification = 'NEEDS_LLM' AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.email_id = e.id)
-                                                        AND NOT EXISTS (SELECT 1 FROM meetings m WHERE m.email_id = e.id)
-                                                        AND NOT EXISTS (SELECT 1 FROM deadlines d WHERE d.email_id = e.id))
+                    OR e.classification = 'NEEDS_LLM'
                 )
                 ORDER BY e.date DESC
                 LIMIT ?;
@@ -419,45 +446,42 @@ class Database:
             )
             transactions = [dict(r) for r in tx_cursor.fetchall()]
 
-            # If receipts table is empty, generate sample analytics from classified receipt emails
-            if not transactions:
-                emails = conn.execute(
-                    "SELECT id, sender, subject, date, snippet FROM emails WHERE classification = 'RECEIPT' ORDER BY date DESC LIMIT 20"
-                ).fetchall()
-                for em in emails:
-                    transactions.append({
-                        "id": em["id"],
-                        "vendor": em["sender"].split("<")[0].strip(),
-                        "amount": 450.0,
-                        "currency": "INR",
-                        "date": em["date"][:10],
-                        "category": "Services",
-                        "is_recurring": 0,
-                        "subject": em["subject"],
-                        "sender": em["sender"],
-                        "snippet": em["snippet"],
-                    })
+            # Real spend trend from extracted receipts
+            # If multiple months, group by month (YYYY-MM); if within single month, group by day (MM-DD)
+            month_count_row = conn.execute("SELECT COUNT(DISTINCT substr(date, 1, 7)) FROM receipts;").fetchone()
+            month_count = month_count_row[0] if month_count_row else 0
+            if month_count > 1:
+                trend_cursor = conn.execute(
+                    """
+                    SELECT substr(date, 1, 7) as period, SUM(amount) as spend
+                    FROM receipts
+                    GROUP BY period
+                    ORDER BY period ASC;
+                    """
+                )
+            else:
+                trend_cursor = conn.execute(
+                    """
+                    SELECT substr(date, 6, 5) as period, SUM(amount) as spend
+                    FROM receipts
+                    GROUP BY period
+                    ORDER BY period ASC;
+                    """
+                )
+            spend_trend = [{"month": r["period"], "spend": round(r["spend"], 2)} for r in trend_cursor.fetchall()]
 
             return {
                 "categories": by_category,
                 "transactions": transactions,
                 "total_transactions": len(transactions),
+                "spend_trend": spend_trend,
             }
+
 
     def list_subscriptions(self) -> list[dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.execute("SELECT * FROM subscriptions ORDER BY last_amount DESC")
-            subs = [dict(r) for r in cursor.fetchall()]
-            if not subs:
-                # Fallback to detected recurring receipts or defaults
-                subs = [
-                    {"vendor": "Netflix", "cadence": "monthly", "last_amount": 649.0, "currency": "INR", "next_expected_date": "2026-10-18", "status": "active", "price_change_alert": "Increased from ₹499 to ₹649"},
-                    {"vendor": "Spotify", "cadence": "monthly", "last_amount": 119.0, "currency": "INR", "next_expected_date": "2026-10-16", "status": "active", "price_change_alert": None},
-                    {"vendor": "GitHub Copilot", "cadence": "monthly", "last_amount": 835.0, "currency": "INR", "next_expected_date": "2026-10-15", "status": "active", "price_change_alert": None},
-                    {"vendor": "Apple iCloud+", "cadence": "monthly", "last_amount": 75.0, "currency": "INR", "next_expected_date": "2026-10-17", "status": "active", "price_change_alert": None},
-                    {"vendor": "Airtel Fiber", "cadence": "monthly", "last_amount": 943.0, "currency": "INR", "next_expected_date": "2026-09-28", "status": "active", "price_change_alert": None},
-                ]
-            return subs
+            return [dict(r) for r in cursor.fetchall()]
 
     def list_newsletters(self) -> list[dict[str, Any]]:
         import re
@@ -500,35 +524,6 @@ class Database:
             )
             deadlines = [dict(r) for r in deadlines_cursor.fetchall()]
 
-            # Fallbacks from classified emails if explicit tables not yet populated
-            if not meetings:
-                em_meets = conn.execute(
-                    "SELECT id, subject, sender, date, snippet FROM emails WHERE classification = 'MEETING' ORDER BY date DESC"
-                ).fetchall()
-                for em in em_meets:
-                    meetings.append({
-                        "id": em["id"],
-                        "title": em["subject"].replace("Invitation: ", ""),
-                        "datetime_start": "2026-09-25T15:00:00Z",
-                        "location_or_link": "https://meet.google.com/xyz-abcd-qrs",
-                        "organizer": em["sender"],
-                        "subject": em["subject"],
-                    })
-
-            if not deadlines:
-                em_deadlines = conn.execute(
-                    "SELECT id, subject, sender, date, snippet FROM emails WHERE classification = 'DEADLINE' ORDER BY date DESC"
-                ).fetchall()
-                for em in em_deadlines:
-                    deadlines.append({
-                        "id": em["id"],
-                        "description": em["subject"],
-                        "due_date": "2026-09-30",
-                        "urgency": "high",
-                        "source_context": em["snippet"],
-                        "sender": em["sender"],
-                    })
-
             return {"meetings": meetings, "deadlines": deadlines}
 
     def list_job_opportunities(self) -> list[dict[str, Any]]:
@@ -559,9 +554,59 @@ class Database:
                     "snippet": row["snippet"],
                 })
 
-            if not jobs:
-                jobs = [
-                    {"id": "job_1", "company": "Stripe", "role": "Staff Backend Engineer", "sender": "recruiting@stripe.com", "date": "2026-09-22", "status": "Interview Scheduled", "snippet": "Invitation for system design discussion"},
-                    {"id": "job_2", "company": "Vercel", "role": "Senior AI Infrastructure Engineer", "sender": "talent@vercel.com", "date": "2026-09-20", "status": "New Inbound", "snippet": "Loved your open source projects, would love to connect"},
-                ]
             return jobs
+
+    def search_emails(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Search emails matching terms in subject, snippet, sender, or body."""
+        import re
+        clean_q = query.strip().lower()
+        if not clean_q:
+            return []
+
+        stopwords = {
+            "what", "when", "where", "which", "who", "whom", "this", "that", "these", "those",
+            "have", "has", "had", "does", "did", "doing", "the", "and", "but", "about", "from",
+            "with", "tell", "show", "find", "give", "much", "many", "more", "some", "any", "how",
+            "are", "was", "were", "been", "for", "say", "said"
+        }
+        raw_tokens = [re.sub(r"[^a-zA-Z0-9]", "", t) for t in clean_q.split()]
+        tokens = [t for t in raw_tokens if len(t) > 2 and t not in stopwords]
+        if not tokens:
+            tokens = [t for t in raw_tokens if len(t) > 2] or [clean_q]
+
+        clauses = []
+        params = []
+        score_cases = []
+        for token in tokens[:5]:
+            p = f"%{token}%"
+            clauses.append(
+                "(LOWER(subject) LIKE ? OR LOWER(snippet) LIKE ? OR LOWER(sender) LIKE ? OR LOWER(body_plain) LIKE ?)"
+            )
+            params.extend([p, p, p, p])
+            score_cases.append(
+                "(CASE WHEN LOWER(subject) LIKE ? THEN 3 ELSE 0 END + "
+                "CASE WHEN LOWER(snippet) LIKE ? THEN 2 ELSE 0 END + "
+                "CASE WHEN LOWER(sender) LIKE ? THEN 2 ELSE 0 END + "
+                "CASE WHEN LOWER(body_plain) LIKE ? THEN 1 ELSE 0 END)"
+            )
+
+        where_sql = " OR ".join(clauses) if clauses else "1=1"
+        score_sql = " + ".join(score_cases) if score_cases else "0"
+
+        # Combine params: score params + where params + limit
+        all_params = list(params) + list(params) + [limit]
+
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                f"""
+                SELECT id, sender, sender_email, sender_domain, subject, date, snippet, classification,
+                       ({score_sql}) AS match_score
+                FROM emails
+                WHERE {where_sql}
+                ORDER BY match_score DESC, date DESC
+                LIMIT ?;
+                """,
+                tuple(all_params),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+

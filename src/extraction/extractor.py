@@ -62,6 +62,7 @@ class LLMExtractor:
                 raw_client = OpenAI(
                     base_url=self.base_url,
                     api_key=self.api_key,
+                    timeout=10.0,
                     default_headers={
                         "HTTP-Referer": "https://github.com/indexlens/indexlens",
                         "X-Title": "IndexLens",
@@ -156,25 +157,40 @@ class LLMExtractor:
             f"Body:\n{email.body_plain[:2000]}\n"
         )
 
-        response: ExtractedEmail = self._client.chat.completions.create(
-            model=self.model,
-            response_model=ExtractedEmail,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert email intelligence agent. Extract structured metadata "
-                        "accurately. If the email contains a receipt/transaction, populate receipt_data. "
-                        "If it contains a meeting/invite, populate meeting_data. "
-                        "If it contains a bill due date or submission deadline, populate deadline_data."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_retries=2,
-        )
-        return response
+        models_to_try = [self.model]
+        for alt in ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "liquid/lfm-2.5-2.6b:free"]:
+            if alt not in models_to_try:
+                models_to_try.append(alt)
+
+        last_err: Optional[Exception] = None
+        for m in models_to_try:
+            try:
+                response: ExtractedEmail = self._client.chat.completions.create(
+                    model=m,
+                    response_model=ExtractedEmail,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert email intelligence agent. Extract structured metadata "
+                                "accurately. If the email contains a receipt/transaction, populate receipt_data. "
+                                "If it contains a meeting/invite, populate meeting_data. "
+                                "If it contains a bill due date or submission deadline, populate deadline_data."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                    max_retries=1,
+                )
+                return response
+            except Exception as err:
+                last_err = err
+                logger.warning("LLM model %s failed: %s. Trying fallback if available...", m, err)
+
+        if last_err:
+            raise last_err
+        raise RuntimeError("No LLM models available.")
 
     def _extract_heuristic(self, email: RawEmail, hint: Optional[str]) -> ExtractedEmail:
         """Deterministic heuristic extraction when LLM is unavailable."""
@@ -233,6 +249,11 @@ class LLMExtractor:
 
     def _heuristic_receipt(self, email: RawEmail) -> ReceiptData:
         """Extract vendor, amount, currency, and category deterministically."""
+        subject_lower = email.subject.lower()
+        # Ignore credit card statement alerts from being counted as receipts
+        if "credit card" in subject_lower and any(w in subject_lower for w in ["payment due", "statement", "alert"]):
+            return ReceiptData(vendor="", amount=None)
+
         # 1. Vendor
         vendor = email.sender.split("<")[0].strip().replace('"', "")
         if not vendor or vendor.lower() in ("receipt", "billing", "notifications", "support", "no-reply"):
