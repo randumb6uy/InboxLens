@@ -208,8 +208,16 @@ def main() -> None:
     serve_parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code change")
     serve_parser.set_defaults(func=handle_serve)
 
+    # launch
+    launch_parser = subparsers.add_parser("launch", help="Launch full-stack product (FastAPI + Vite Dashboard + Forwarder)")
+    launch_parser.add_argument("--backend-port", type=int, default=8000, help="Backend port (default: 8000)")
+    launch_parser.add_argument("--ui-port", type=int, default=8080, help="UI port (default: 8080)")
+    launch_parser.add_argument("--no-browser", action="store_true", help="Do not automatically open default browser")
+    launch_parser.set_defaults(func=handle_launch)
+
     args = parser.parse_args()
     args.func(args)
+
 
 
 def handle_test_llm(args: argparse.Namespace) -> None:
@@ -277,5 +285,73 @@ def handle_serve(args: argparse.Namespace) -> None:
     uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=args.reload)
 
 
+def handle_launch(args: argparse.Namespace) -> None:
+    """Launch full stack: FastAPI backend, Vite dev server, forwarder proxy, and auto-open browser."""
+    import subprocess
+    import time
+    import webbrowser
+    from src.config import BASE_DIR
+
+    console.print(
+        Panel.fit(
+            "[bold cyan]IndexLens — Launching Full-Stack Application[/bold cyan]\n"
+            f"Backend API: [green]http://127.0.0.1:{args.backend_port}[/green]\n"
+            f"Dashboard UI: [green]http://localhost:{args.ui_port}[/green]\n"
+            f"Forwarder: [green]http://localhost:5173[/green]\n"
+            "Press [bold red]Ctrl+C[/bold red] to stop all services.",
+            border_style="cyan",
+        )
+    )
+
+    processes = []
+    try:
+        # 1. Start Backend API
+        backend_cmd = [sys.executable, "-m", "src.cli", "serve", "--port", str(args.backend_port)]
+        backend_proc = subprocess.Popen(backend_cmd, cwd=str(BASE_DIR))
+        processes.append(("Backend", backend_proc))
+
+        # 2. Start Frontend Vite
+        frontend_dir = BASE_DIR / "frontend"
+        if frontend_dir.exists():
+            frontend_cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "run", "dev"]
+            frontend_proc = subprocess.Popen(frontend_cmd, cwd=str(frontend_dir))
+            processes.append(("Frontend", frontend_proc))
+
+        # 3. Start Port 5173 Forwarder if proxy5173.js exists
+        proxy_script = BASE_DIR / "proxy5173.js"
+        if proxy_script.exists():
+            proxy_cmd = ["node", str(proxy_script)]
+            proxy_proc = subprocess.Popen(proxy_cmd, cwd=str(BASE_DIR))
+            processes.append(("Proxy5173", proxy_proc))
+
+        time.sleep(3)
+
+        if not args.no_browser:
+            webbrowser.open(f"http://localhost:{args.ui_port}")
+
+        console.print("[bold green]All services running! Listening for requests...[/bold green]")
+
+        # Keep running until interrupted
+        while True:
+            time.sleep(1)
+            for name, proc in processes:
+                if proc.poll() is not None:
+                    console.print(f"[yellow]Process {name} exited with code {proc.returncode}[/yellow]")
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Stopping IndexLens services...[/bold yellow]")
+    finally:
+        for name, proc in processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        console.print("[bold green]All services stopped cleanly.[/bold green]")
+
+
 if __name__ == "__main__":
     main()
+
